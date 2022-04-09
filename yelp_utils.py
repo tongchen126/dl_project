@@ -5,6 +5,7 @@ from gensim.models import word2vec
 import re
 import torch
 
+from yelp import YelpModelv0
 def pd_load_csv(file,cols=None):
     with open(file,'r') as f:
         return pd.read_csv(f,usecols=cols)
@@ -90,8 +91,8 @@ class YelpDataset(Dataset):
     TEXT_COLS = ['categories','text']
     COVID_COLS = ['highlights', 'delivery or takeout', 'Grubhub enabled', 'Call To Action enabled', 'Request a Quote Enabled', 'Covid Banner', 'Virtual Services Offered']
 
-    def __init__(self,data_path,w2v:Preprocess=None):
-        self.raw_data = pd_load_csv(data_path,cols=self.USECOLS)
+    def __init__(self,data_path,w2v:Preprocess=None,maxlen=100):
+        self.raw_data = pd_load_csv(data_path,cols=self.USECOLS).iloc[:int(maxlen)]
         self.w2v = w2v
         self.data = {}
         self.word2vec_dataset = []
@@ -101,43 +102,47 @@ class YelpDataset(Dataset):
         else:
             self.embedding = None
 
+        self.init_dataset()
+
+    def init_dataset(self):
+        for i in range(len(self)):
+            int_array = []
+            class_array = []
+            text_embedding_array = []
+            covid_array = []
+
+            row = self.raw_data.iloc[i]
+
+            for col in self.INT_COLS:
+                int_array.append(int(row[col]))
+
+            for col in self.CLASS_COLS:
+                class_array.append(int(row[col]))
+
+            for col in self.TEXT_COLS:
+                sentence = self.sentence_split(row[col])
+                sentence_embedding = self.w2v.sentence_word2idx(sentence)
+                text_embedding_array.append(sentence_embedding)
+
+            for col in self.COVID_COLS:
+                col_value = row[col]
+                col_value = str(col_value).upper() == 'FALSE'
+                covid_result = 0 if col_value else 1
+                covid_array.append(covid_result)
+            covid_target = np.sum(covid_array)
+
+            int_array = torch.FloatTensor(int_array)
+            class_array = torch.IntTensor(class_array)
+            text_embedding_array = torch.stack(text_embedding_array, dim=0)
+
+            self.data[i] = (int_array, class_array, text_embedding_array, covid_target)
+
     def __len__(self):
         return len(self.raw_data)
 
-    def __getitem__(self, item):
-        if item in self.data:
-            return self.data[item]
-        int_array = []
-        class_array = []
-        text_embedding_array = []
-        covid_array = []
-        row = self.raw_data.iloc[item]
-
-        for col in self.INT_COLS:
-            int_array.append(int(row[col]))
-
-        for col in self.CLASS_COLS:
-            class_array.append(int(row[col]))
-
-        for col in self.TEXT_COLS:
-            sentence = self.sentence_split(row[col])
-            sentence_embedding = self.w2v.sentence_word2idx(sentence)
-            text_embedding_array.append(sentence_embedding)
-
-        for col in self.COVID_COLS:
-            col_value = row[col]
-            col_value = str(col_value).upper() == 'FALSE'
-            covid_result = 0 if col_value else 1
-            covid_array.append(covid_result)
-        covid_target = torch.IntTensor(np.sum(covid_array))
-
-        int_array = torch.IntTensor(int_array)
-        class_array = torch.IntTensor(class_array)
-        text_embedding_array = torch.stack(text_embedding_array, dim=0)
-
-        self.data[item] = (int_array,class_array,text_embedding_array,covid_target)
-
-        return self.data[item]
+    def __getitem__(self, idx):
+        int_array, class_array, text_embedding_array, covid_target = self.data[idx]
+        return (int_array,class_array,text_embedding_array,covid_target)
 
     def sentence_split(self,sentence):
         return list(filter(None, re.split(' |;|,|\.|&', sentence.strip('\n'))))
@@ -157,8 +162,8 @@ class YelpDataset(Dataset):
         return self.word2vec_dataset
 
 if __name__ == '__main__':
-    METHODS = ['train_w2v', 'inspect_dataset']
-    method = METHODS[0]
+    METHODS = ['train_w2v', 'inspect_dataset','inspect_model']
+    method = METHODS[2]
     if method == 'train_w2v':
         dataset = YelpDataset('/root/Downloads/yelp/kaggle/business_review_covid.csv')
         w2v_dataset = dataset.prepare_word2vec_data()
@@ -167,4 +172,15 @@ if __name__ == '__main__':
         w2v_model = Preprocess(30)
         dataset = YelpDataset('/root/Downloads/yelp/kaggle/business_review_covid.csv',w2v_model)
         a=dataset[0]
+        embedding = dataset.embedding
+        emb_size = embedding.size()
+    elif method == 'inspect_model':
+        w2v_model = Preprocess(30)
+        dataset = YelpDataset('/root/Downloads/yelp/kaggle/business_review_covid.csv',w2v_model)
+        model = YelpModelv0(dataset.embedding,len(dataset.INT_COLS))
+        train_loader = torch.utils.data.DataLoader(dataset=dataset,batch_size=32,shuffle=False,num_workers=0)
+        for step, data in enumerate(train_loader):
+            x=data[:3]
+            y=data[3]
+            model(x)
     print('end')
