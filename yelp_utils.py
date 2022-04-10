@@ -4,6 +4,7 @@ import numpy as np
 from gensim.models import word2vec
 import re
 import torch
+from matplotlib import pyplot as plt
 
 from yelp import YelpModelv0
 def pd_load_csv(file,cols=None):
@@ -23,6 +24,14 @@ def train_word2vec(x,vector_size=250,save_path='model/yelp/w2v_yelp.model'):
     if save_path:
         model.save(save_path)
     return model
+
+def save_loss(data,file='model/yelp/loss.png'):
+    iterations = range(0, len(data))
+    plt.plot(iterations, data)
+    plt.ylabel('Loss')
+    plt.xlabel('Iterations')
+    plt.ylim()
+    plt.savefig(file)
 
 class Preprocess():
     def __init__(self, sen_len, w2v_path="model/yelp/w2v_yelp.model"):
@@ -91,7 +100,7 @@ class YelpDataset(Dataset):
     TEXT_COLS = ['categories','text']
     COVID_COLS = ['highlights', 'delivery or takeout', 'Grubhub enabled', 'Call To Action enabled', 'Request a Quote Enabled', 'Covid Banner', 'Virtual Services Offered']
 
-    def __init__(self,data_path,w2v:Preprocess=None,maxlen=100):
+    def __init__(self,data_path,w2v:Preprocess=None,maxlen=1e6):
         self.raw_data = pd_load_csv(data_path,cols=self.USECOLS).iloc[:int(maxlen)]
         self.w2v = w2v
         self.data = {}
@@ -105,6 +114,7 @@ class YelpDataset(Dataset):
         self.init_dataset()
 
     def init_dataset(self):
+        print('Dataset length {0}'.format(len(self)))
         for i in range(len(self)):
             int_array = []
             class_array = []
@@ -129,13 +139,15 @@ class YelpDataset(Dataset):
                 col_value = str(col_value).upper() == 'FALSE'
                 covid_result = 0 if col_value else 1
                 covid_array.append(covid_result)
-            covid_target = np.sum(covid_array)
+            covid_target = np.sum(covid_array)/len(self.COVID_COLS)
 
             int_array = torch.FloatTensor(int_array)
             class_array = torch.IntTensor(class_array)
             text_embedding_array = torch.stack(text_embedding_array, dim=0)
 
             self.data[i] = (int_array, class_array, text_embedding_array, covid_target)
+            if len(self.data) % 1000 == 0:
+                print('Current length {0}'.format(len(self.data)))
 
     def __len__(self):
         return len(self.raw_data)
@@ -162,8 +174,10 @@ class YelpDataset(Dataset):
         return self.word2vec_dataset
 
 if __name__ == '__main__':
-    METHODS = ['train_w2v', 'inspect_dataset','inspect_model']
-    method = METHODS[2]
+    METHODS = ['train_w2v', 'inspect_dataset','inspect_model','train']
+    device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
+    #device = torch.device("cpu")
+    method = METHODS[3]
     if method == 'train_w2v':
         dataset = YelpDataset('/root/Downloads/yelp/kaggle/business_review_covid.csv')
         w2v_dataset = dataset.prepare_word2vec_data()
@@ -176,11 +190,54 @@ if __name__ == '__main__':
         emb_size = embedding.size()
     elif method == 'inspect_model':
         w2v_model = Preprocess(30)
-        dataset = YelpDataset('/root/Downloads/yelp/kaggle/business_review_covid.csv',w2v_model)
-        model = YelpModelv0(dataset.embedding,len(dataset.INT_COLS))
+        dataset = YelpDataset('/root/Downloads/yelp/kaggle/business_review_covid.csv',w2v_model,maxlen=1e6)
+        model = YelpModelv0(dataset.embedding,len(dataset.INT_COLS)).to(device)
         train_loader = torch.utils.data.DataLoader(dataset=dataset,batch_size=32,shuffle=False,num_workers=0)
         for step, data in enumerate(train_loader):
-            x=data[:3]
+            int_array, class_array, text_embedding_array = data[:3]
             y=data[3]
-            model(x)
+
+            int_array=int_array.to(device)
+            class_array=class_array.to(device)
+            text_embedding_array=text_embedding_array.to(device)
+            y=y.to(device)
+
+            model(int_array, class_array, text_embedding_array)
+    elif method == 'train':
+        config = {
+            'w2v_length'    :   30,
+            'dataset_length':   5e6,
+            'batch_size' : 64,
+            'num_workers': 8,
+            'lr'         : 1e-3,
+            'epoch'      : 5,
+        }
+        w2v_model = Preprocess(config['w2v_length'])
+        dataset = YelpDataset('/root/Downloads/yelp/kaggle/business_review_covid.csv',w2v_model,maxlen=config['dataset_length'])
+        model = YelpModelv0(dataset.embedding,len(dataset.INT_COLS),text_dim=len(dataset.TEXT_COLS)).to(device)
+        train_loader = torch.utils.data.DataLoader(dataset=dataset,batch_size=config['batch_size'],shuffle=True,num_workers=config['num_workers'])
+        model.train()
+        optimizer = torch.optim.Adam(model.parameters(),lr=config['lr'])
+        criterion = torch.nn.L1Loss()
+        loss_list = []
+        for epoch in range(config['epoch']):
+            for step, data in enumerate(train_loader):
+                optimizer.zero_grad()
+                int_array, class_array, text_embedding_array = data[:3]
+                y = data[3]
+
+                int_array = int_array.to(device)
+                class_array = class_array.to(device)
+                text_embedding_array = text_embedding_array.to(device)
+                y = y.to(device)
+
+                pred = model(int_array, class_array, text_embedding_array).squeeze()
+                loss = criterion(pred,y)
+                loss.backward()
+                optimizer.step()
+
+                loss_list.append(loss.item())
+                if step % 1000 == 0:
+                    print('epoch {0}, loss {1}'.format(epoch,loss.item()))
+                    save_loss(loss_list)
     print('end')
