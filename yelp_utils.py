@@ -6,7 +6,7 @@ import re
 import torch
 from matplotlib import pyplot as plt
 
-from yelp import YelpModelv0
+from yelp import *
 def pd_load_csv(file,cols=None):
     with open(file,'r') as f:
         return pd.read_csv(f,usecols=cols)
@@ -214,7 +214,7 @@ if __name__ == '__main__':
         }
         w2v_model = Preprocess(config['w2v_length'])
         dataset = YelpDataset('/root/Downloads/yelp/kaggle/business_review_covid.csv',w2v_model,maxlen=config['dataset_length'])
-        model = YelpModelv0(dataset.embedding,len(dataset.INT_COLS),text_dim=len(dataset.TEXT_COLS)).to(device)
+        model = YelpModelv1(dataset.embedding,len(dataset.INT_COLS),text_dim=len(dataset.TEXT_COLS)).to(device)
         train_loader = torch.utils.data.DataLoader(dataset=dataset,batch_size=config['batch_size'],shuffle=True,num_workers=config['num_workers'])
         model.train()
         optimizer = torch.optim.Adam(model.parameters(),lr=config['lr'])
